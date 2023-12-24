@@ -124,6 +124,7 @@ class ModelRunner:
         slot_mapping: List[List[int]] = []
         context_lens: List[int] = []
         block_tables: List[List[int]] = []
+        max_len = 0
 
         for seq_group_metadata in seq_group_metadata_list:
             assert not seq_group_metadata.is_prompt
@@ -131,22 +132,28 @@ class ModelRunner:
             seq_ids = list(seq_group_metadata.seq_data.keys())
             for seq_id in seq_ids:
                 seq_data = seq_group_metadata.seq_data[seq_id]
-                generation_token = seq_data.get_last_token_id()
-                input_tokens.append([generation_token])
+                num_new_tokens = seq_data.num_new_tokens
+                max_len = max(max_len, num_new_tokens)
+                new_tokens = seq_data.get_token_ids()[-num_new_tokens:]
+                input_tokens.append(new_tokens)
 
                 seq_len = seq_data.get_len()
-                position = seq_len - 1
-                input_positions.append([position])
+                block_table = seq_group_metadata.block_tables[seq_id]
+                positions: List[int] = []
+                slots: List[int] = []
+                for position in range(seq_len - num_new_tokens, seq_len):
+                    positions.append(position)
+                    block_number = block_table[position // self.block_size]
+                    block_offset = position % self.block_size
+                    slot = block_number * self.block_size + block_offset
+                    slots.append(slot)
+
+                input_positions.append(positions)
+                slot_mapping.append(slots)
 
                 context_len = seq_len if self.sliding_window is None else min(
                     seq_len, self.sliding_window)
                 context_lens.append(context_len)
-
-                block_table = seq_group_metadata.block_tables[seq_id]
-                block_number = block_table[position // self.block_size]
-                block_offset = position % self.block_size
-                slot = block_number * self.block_size + block_offset
-                slot_mapping.append([slot])
 
                 if self.sliding_window is not None:
                     sliding_window_blocks = (self.sliding_window //
@@ -155,15 +162,15 @@ class ModelRunner:
                 block_tables.append(block_table)
 
         input_tokens = _make_tensor_with_pad(input_tokens,
-                                             max_len=1,
+                                             max_len,
                                              pad=0,
                                              dtype=torch.long)
         input_positions = _make_tensor_with_pad(input_positions,
-                                                max_len=1,
+                                                max_len,
                                                 pad=0,
                                                 dtype=torch.long)
         slot_mapping = _make_tensor_with_pad(slot_mapping,
-                                             max_len=1,
+                                             max_len,
                                              pad=_PAD_SLOT_ID,
                                              dtype=torch.long)
         max_context_len = max(context_lens)
@@ -275,6 +282,8 @@ class ModelRunner:
         sampling_metadata = self._prepare_sample(seq_group_metadata_list,
                                                  input_metadata.prompt_lens)
 
+        print('input_tokens: ')
+        print(input_tokens)
         # Execute the model.
         hidden_states = self.model(
             input_ids=input_tokens,

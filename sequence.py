@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Union
 
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
+from vllm.utils import Counter
 
 PromptLogprobs = List[Optional[Dict[int, float]]]
 SampleLogprobs = List[Dict[int, float]]
@@ -67,6 +68,7 @@ class SequenceData:
         self.prompt_token_ids = prompt_token_ids
         self.output_token_ids: List[int] = []
         self.cumulative_logprob = 0.0
+        self.num_new_tokens = 0
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
@@ -218,6 +220,9 @@ class Sequence:
         return (f"Sequence(seq_id={self.seq_id}, "
                 f"status={self.status.name}, "
                 f"num_blocks={len(self.logical_token_blocks)})")
+    
+    def __lt__(self, other: "Sequence") -> bool:
+        return self.seq_id <= other.seq_id 
 
 
 class SequenceGroup:
@@ -236,12 +241,14 @@ class SequenceGroup:
         seqs: List[Sequence],
         sampling_params: SamplingParams,
         arrival_time: float,
+        seq_counter: Counter,
     ) -> None:
         self.request_id = request_id
         self.seqs_dict = {seq.seq_id: seq for seq in seqs}
         self.sampling_params = sampling_params
         self.arrival_time = arrival_time
         self.prompt_logprobs: Optional[PromptLogprobs] = None
+        self.seq_counter = seq_counter
 
     @property
     def prompt(self) -> str:
@@ -282,6 +289,26 @@ class SequenceGroup:
             return [
                 seq for seq in self.seqs_dict.values() if seq.status == status
             ]
+
+    def set_spec_tokens(self, spec_tokens: List[int]) -> None:
+        self.spec_tokens = spec_tokens
+        seq = list(self.seqs_dict.values())[0]
+        seq.data.num_new_tokens = 1
+
+        for i in range(len(spec_tokens)):
+            new_seq = seq.fork(next(self.seq_counter))
+            new_seq.data.num_new_tokens = i + 2
+            for j in range(i+1):
+                new_seq.append_token_id(spec_tokens[j], {spec_tokens[j]: 1.0})
+            self.add(new_seq)
+
+    def verify_spec_tokens(self, output: List[int]) -> int:
+        seqs = list(self.seqs_dict.values())
+        seqs.sort()
+        for i in range(len(seqs)):
+            if i+1 == len(seqs) or seqs[i+1].get_last_token_id() != output[i]:
+                seqs[i].append_token_id(output[i], {output[i]: 1.0})
+                return seqs[i].seq_id
 
     def get_unfinished_seqs(self) -> List[Sequence]:
         return [
@@ -384,6 +411,9 @@ class SequenceOutput:
         return (self.parent_seq_id == other.parent_seq_id
                 and self.output_token == other.output_token
                 and self.logprobs == other.logprobs)
+    
+    def __lt__(self, other: object) -> bool:
+        return self.parent_seq_id <= other.parent_seq_id 
 
 
 class SequenceGroupOutput:

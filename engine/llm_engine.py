@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 _LOGGING_INTERVAL_SEC = 5
+steps = 3
 
 
 class LLMEngine:
@@ -286,7 +287,7 @@ class LLMEngine:
 
         # Create the sequence group.
         seq_group = SequenceGroup(request_id, [seq], sampling_params,
-                                  arrival_time)
+                                  arrival_time, self.seq_counter)
 
         # Add the sequence group to the scheduler.
         self.scheduler.add_seq_group(seq_group)
@@ -542,7 +543,21 @@ class LLMEngine:
         # Update the scheduled sequence groups with the model outputs.
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         for seq_group, outputs in zip(scheduled_seq_groups, output):
-            self._process_sequence_group_outputs(seq_group, outputs)
+            seq_outputs = outputs.samples 
+            seq_outputs.sort()
+            output_tokens = [seq_output.output_token for seq_output in seq_outputs]
+            print('output:', seq_group.request_id)
+            print(output_tokens)
+            accept_seq = seq_group.verify_spec_tokens(output_tokens)
+            print('accept_seq: ', accept_seq)
+            if accept_seq is not None:
+                seqs = seq_group.get_seqs()
+                for seq in seqs:
+                    if seq.seq_id != accept_seq:
+                        seq_group.remove(seq.seq_id)
+                        self.scheduler.free_seq(seq)
+            
+            # self._process_sequence_group_outputs(seq_group, outputs)
 
         # Free the finished sequence groups.
         self.scheduler.free_finished_seq_groups()
@@ -569,6 +584,11 @@ class LLMEngine:
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
+        global steps
+        if steps == 0:
+            exit()
+        steps = steps - 1
+
         seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
         if scheduler_outputs.is_empty():
             return ignored

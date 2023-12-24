@@ -165,6 +165,9 @@ class PagedAttention(nn.Module):
             output = out.view_as(query)
         else:
             # Decoding run.
+            query = query.view(batch_size, seq_len, hidden_size)[:, -1:, :]
+            query = query.view(-1, self.num_heads, self.head_size)
+            seq_len = 1
             output = _paged_attention(
                 query,
                 key_cache,

@@ -205,6 +205,14 @@ class Scheduler:
                 )
                 return scheduler_outputs
 
+        seq_group = self.running[0]
+        spec_tokens = [6, 127]
+        seq_group.set_spec_tokens(spec_tokens)
+        seqs = seq_group.get_seqs()
+        seqs.sort()
+        for i in range(1, len(seqs)):
+            self.fork_seq(seqs[0], seqs[i])
+
         # NOTE(woosuk): Preemption happens only when there is no available slot
         # to keep all the sequence groups in the RUNNING state.
         # In this case, the policy is responsible for deciding which sequence
